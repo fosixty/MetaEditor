@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MetaEditor — Dark, precision-styled audio metadata editor (desktop).
+Quartz — GoldKit audio metadata editor (desktop).
 Formats: MP3, FLAC, M4A, WAV (mutagen + PyQt6).
 """
 
@@ -16,7 +16,7 @@ from enum import Enum, auto
 from typing import Any, Callable, Optional
 
 from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtGui import QFont, QImage, QKeySequence, QPixmap, QShortcut
+from PyQt6.QtGui import QFont, QFontDatabase, QImage, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -45,15 +45,22 @@ try:
 except Exception:
     pass
 from mutagen.flac import FLAC, Picture
-from mutagen.id3 import APIC, COMM, ID3, TALB, TBPM, TCOM, TCON, TDRC, TIT2, TKEY, TPE1, TPE2, TRCK, USLT
+from mutagen.id3 import APIC, COMM, ID3, TALB, TBPM, TCOM, TCON, TDRC, TIT2, TKEY, TPE1, TPE2, TRCK, TXXX, USLT
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
 from mutagen.wave import WAVE
 
 
 def _get_error_log_path() -> str:
-    root = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    log_dir = os.path.join(root, "MetaEditor")
+    if sys.platform == "win32":
+        root = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        root = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    else:
+        root = os.environ.get("XDG_STATE_HOME") or os.path.join(
+            os.path.expanduser("~"), ".local", "state"
+        )
+    log_dir = os.path.join(root, "GoldKit", "Quartz")
     os.makedirs(log_dir, exist_ok=True)
     return os.path.join(log_dir, "crash.log")
 
@@ -63,7 +70,7 @@ def _log_startup_exception(ex: BaseException) -> str:
     tb = traceback.format_exc()
     with open(path, "a", encoding="utf-8") as f:
         f.write("=" * 72 + "\n")
-        f.write("MetaEditor startup failure\n")
+        f.write("Quartz startup failure\n")
         f.write(tb)
         if not tb.endswith("\n"):
             f.write("\n")
@@ -201,16 +208,32 @@ def _frame_text(frame: Any) -> str:
     return str(raw)
 
 
-def _comm_first(comm: Any) -> str:
-    if comm is None:
-        return ""
-    raw = getattr(comm, "text", None)
-    if raw is None:
-        return ""
-    if isinstance(raw, list) and raw:
-        entry = raw[0]
-        return str(entry) if entry is not None else ""
-    return str(raw)
+
+def _read_txxx_desc(tags: ID3, desc: str) -> str:
+    want = desc.casefold()
+    try:
+        for v in tags.values():
+            if isinstance(v, TXXX):
+                d = getattr(v, "desc", "") or ""
+                if d.casefold() == want:
+                    return _frame_text(v)
+    except Exception:
+        pass
+    return ""
+
+
+def _write_txxx_desc(tags: ID3, desc: str, text: str) -> None:
+    try:
+        for k in list(tags.keys()):
+            fr = tags.get(k)
+            if isinstance(fr, TXXX):
+                d = getattr(fr, "desc", "") or ""
+                if d.casefold() == desc.casefold():
+                    del tags[k]
+        if text.strip():
+            tags.add(TXXX(encoding=3, desc=desc, text=text))
+    except Exception:
+        pass
 
 
 @dataclass
@@ -223,6 +246,8 @@ class TagBundle:
     year: str = ""
     genre: str = ""
     composer: str = ""
+    engineer: str = ""
+    recorded_at: str = ""
     comment: str = ""
     bpm: str = ""
     key: str = ""
@@ -246,7 +271,7 @@ def _read_id3_common(audio: ID3) -> TagBundle:
         def comm_text() -> str:
             for f in audio.values():
                 if isinstance(f, COMM):
-                    return _comm_first(f)
+                    return _frame_text(f)
             return ""
 
         def lyrics_or_comment() -> str:
@@ -288,6 +313,8 @@ def _read_id3_common(audio: ID3) -> TagBundle:
             t.bpm = _frame_text(fr("TBPM"))
         if fr("TKEY"):
             t.key = _frame_text(fr("TKEY"))
+        t.engineer = _read_txxx_desc(audio, "Engineer")
+        t.recorded_at = _read_txxx_desc(audio, "Recorded At")
     except Exception:
         return TagBundle()
     return t
@@ -342,6 +369,9 @@ def _read_mp3(path: str, audio: MP3) -> TagBundle:
         t.comment = _read_id3_common(audio.tags).comment
     data, mime = _apic_read(audio.tags)
     t.cover_data, t.cover_mime = data, mime
+    if audio.tags:
+        t.engineer = _read_txxx_desc(audio.tags, "Engineer") or t.engineer
+        t.recorded_at = _read_txxx_desc(audio.tags, "Recorded At") or t.recorded_at
     return t
 
 
@@ -356,6 +386,8 @@ def _read_flac(audio: FLAC) -> TagBundle:
     t.year = (_s(vc.get("date")) or _s(vc.get("year")))[:4]
     t.genre = _s(vc.get("genre"))
     t.composer = _s(vc.get("composer"))
+    t.engineer = _s(vc.get("engineer") or vc.get("ENGINEER"))
+    t.recorded_at = _s(vc.get("recorded_at") or vc.get("RECORDED_AT"))
     t.comment = _s(vc.get("comment") or vc.get("description"))
     t.bpm = _s(vc.get("bpm") or vc.get("tbpm"))
     t.key = _s(vc.get("initialkey") or vc.get("key"))
@@ -388,13 +420,18 @@ def _read_m4a(audio: MP4) -> TagBundle:
     tmpo = audio.tags.get("tmpo") if audio.tags else None
     if tmpo:
         t.bpm = str(tmpo[0])
-    ik = "----:com.apple.iTunes:Initial Key"
-    if audio.tags and ik in audio.tags:
-        raw = audio.tags[ik][0]
+    def _m4a_freeform(tail: str) -> str:
+        k = f"----:com.apple.iTunes:{tail}"
+        if not audio.tags or k not in audio.tags:
+            return ""
+        raw = audio.tags[k][0]
         if isinstance(raw, MP4FreeForm):
-            t.key = raw.decode()
-        else:
-            t.key = str(raw)
+            return raw.decode()
+        return str(raw)
+
+    t.key = _m4a_freeform("Initial Key")
+    t.engineer = _m4a_freeform("Engineer")
+    t.recorded_at = _m4a_freeform("Recorded At")
     cov = audio.tags.get("covr") if audio.tags else None
     if cov:
         c0 = cov[0]
@@ -509,6 +546,9 @@ def _save_mp3(loaded: LoadedAudio, tb: TagBundle) -> None:
         mime = tb.cover_mime or "image/jpeg"
         tags.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=tb.cover_data))
 
+    _write_txxx_desc(tags, "Engineer", tb.engineer)
+    _write_txxx_desc(tags, "Recorded At", tb.recorded_at)
+
     audio.save()
 
 
@@ -531,6 +571,8 @@ def _save_flac(loaded: LoadedAudio, tb: TagBundle) -> None:
     sv("date", tb.year)
     sv("genre", tb.genre)
     sv("composer", tb.composer)
+    sv("engineer", tb.engineer)
+    sv("recorded_at", tb.recorded_at)
     sv("comment", tb.comment)
     sv("bpm", tb.bpm)
     sv("initialkey", tb.key)
@@ -592,11 +634,16 @@ def _save_m4a(loaded: LoadedAudio, tb: TagBundle) -> None:
     elif "tmpo" in audio.tags:
         del audio.tags["tmpo"]
 
-    ik = "----:com.apple.iTunes:Initial Key"
-    if tb.key.strip():
-        audio.tags[ik] = [MP4FreeForm(tb.key.encode("utf-8"))]
-    elif ik in audio.tags:
-        del audio.tags[ik]
+    def set_ff(tail: str, val: str) -> None:
+        k = f"----:com.apple.iTunes:{tail}"
+        if val.strip():
+            audio.tags[k] = [MP4FreeForm(val.encode("utf-8"))]
+        elif k in audio.tags:
+            del audio.tags[k]
+
+    set_ff("Initial Key", tb.key)
+    set_ff("Engineer", tb.engineer)
+    set_ff("Recorded At", tb.recorded_at)
 
     if tb._cover_replaced:
         if "covr" in audio.tags:
@@ -625,17 +672,15 @@ def _save_wav(loaded: LoadedAudio, tb: TagBundle) -> None:
     _write_id3_frame(tags, "TDRC", TDRC, tb.year)
     _write_id3_frame(tags, "TCON", TCON, tb.genre)
     _write_id3_frame(tags, "TCOM", TCOM, tb.composer)
+    for k, f in list(tags.items()):
+        if isinstance(f, COMM):
+            del tags[k]
     if tb.comment.strip():
-        for k, f in list(tags.items()):
-            if isinstance(f, COMM):
-                del tags[k]
         tags.add(COMM(encoding=3, lang="eng", desc="", text=tb.comment))
-    elif not tb.comment.strip():
-        for k, f in list(tags.items()):
-            if isinstance(f, COMM):
-                del tags[k]
     _write_id3_frame(tags, "TBPM", TBPM, tb.bpm)
     _write_id3_frame(tags, "TKEY", TKEY, tb.key)
+    _write_txxx_desc(tags, "Engineer", tb.engineer)
+    _write_txxx_desc(tags, "Recorded At", tb.recorded_at)
 
     for k in list(tags.keys()):
         if k.startswith("APIC"):
@@ -753,7 +798,7 @@ class DropZone(QFrame):
         t = QLabel("Drop your track here")
         t.setStyleSheet(f"font-size: 18px; font-weight: 600; color: {TEXT}; letter-spacing: 0.5px;")
         t.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub = QLabel("or click to browse  ·  MP3  FLAC  M4A  WAV")
+        sub = QLabel("GoldKit  ·  MP3  FLAC  M4A  WAV  ·  or click to browse")
         sub.setStyleSheet(f"font-size: 12px; color: {TEXT_MUTED};")
         sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(icon)
@@ -864,7 +909,7 @@ class ArtworkFrame(QFrame):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("MetaEditor")
+        self.setWindowTitle("Quartz")
         self.setMinimumSize(920, 640)
         self.resize(980, 700)
 
@@ -955,9 +1000,11 @@ class MainWindow(QMainWindow):
         add_row("Year", "year")
         add_row("Genre", "genre", combo=True)
         add_row("Composer", "composer")
-        add_row("Comment", "comment")
+        add_row("Engineer(s)", "engineer")
+        add_row("Recorded At", "recorded_at")
         add_row("BPM", "bpm")
         add_row("Key", "key")
+        add_row("Comment", "comment")
 
         form_wrap.setWidget(form_inner)
         cl.addLayout(left, 0)
@@ -984,9 +1031,9 @@ class MainWindow(QMainWindow):
 
         sb = QStatusBar()
         self.setStatusBar(sb)
-        self.statusBar().showMessage("Ready — drop a file or click the zone to browse")
+        self.statusBar().showMessage("Quartz — drop a file or click the zone to browse")
 
-        QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save_in_place)
+        QShortcut(QKeySequence(QKeySequence.StandardKey.Save), self, activated=self.save_in_place)
 
         self.setStyleSheet(app_stylesheet())
 
@@ -1023,6 +1070,8 @@ class MainWindow(QMainWindow):
             self._set_field("year", tb.year)
             self._set_field("genre", tb.genre)
             self._set_field("composer", tb.composer)
+            self._set_field("engineer", tb.engineer)
+            self._set_field("recorded_at", tb.recorded_at)
             self._set_field("comment", tb.comment)
             self._set_field("bpm", tb.bpm)
             self._set_field("key", tb.key)
@@ -1064,6 +1113,8 @@ class MainWindow(QMainWindow):
             year=self._get_field("year"),
             genre=self._get_field("genre"),
             composer=self._get_field("composer"),
+            engineer=self._get_field("engineer"),
+            recorded_at=self._get_field("recorded_at"),
             comment=self._get_field("comment"),
             bpm=self._get_field("bpm"),
             key=self._get_field("key"),
@@ -1159,9 +1210,12 @@ def main() -> None:
         except Exception:
             pass
         app = QApplication(sys.argv)
-        f = QFont(FONT_FAMILY, 10)
-        if not QFont(FONT_FAMILY).exactMatch():
-            f = QFont(FONT_FALLBACK, 10)
+        if sys.platform == "win32":
+            f = QFont(FONT_FAMILY, 10)
+            if not QFont(FONT_FAMILY).exactMatch():
+                f = QFont(FONT_FALLBACK, 10)
+        else:
+            f = QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
         app.setFont(f)
         w = MainWindow()
         w.show()
@@ -1170,7 +1224,7 @@ def main() -> None:
         log_path = _log_startup_exception(ex)
         QMessageBox.critical(
             None,
-            "MetaEditor failed to start",
+            "Quartz failed to start",
             f"{ex}\n\nA crash log was written to:\n{log_path}",
         )
         raise
