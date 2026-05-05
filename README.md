@@ -41,7 +41,23 @@ pip install pyinstaller
 pyinstaller Quartz.spec
 ```
 
-Outputs are under `dist/`. On macOS you get an app bundle; on Windows, a foldered executable layout. You can package the macOS app into a `.dmg` with your usual tooling (e.g. `create-dmg` or Disk Utility).
+Outputs are under `dist/`. On macOS you get an app bundle; on Windows, a foldered executable layout.
+
+### macOS installer (.dmg)
+
+Use the included script to produce a drag-to-install `.dmg` — no extra tools needed, just the macOS built-in `hdiutil`.
+
+```bash
+# Uses the existing dist/Quartz.app
+bash scripts/build-macos-dmg.sh
+
+# Or rebuild the app bundle first, then package it
+bash scripts/build-macos-dmg.sh --rebuild
+```
+
+Output: `dist/Quartz-<version>.dmg`
+
+The version is read from `Quartz.spec` → `CFBundleShortVersionString` in `info_plist`. Update it there before releasing.
 
 > **Crash logs (packaged Windows builds):** startup failures are appended to `%LOCALAPPDATA%\GoldKit\Quartz\crash.log` when the app cannot start normally.
 

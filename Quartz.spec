@@ -48,8 +48,11 @@ app = BUNDLE(
     name='Quartz.app',
     icon=None,
     bundle_identifier='com.goldkit.quartz',
+    version='1.0.0',
     info_plist={
         'NSPrincipalClass': 'NSApplication',
         'NSHighResolutionCapable': True,
+        'CFBundleShortVersionString': '1.0.0',
+        'CFBundleVersion': '1.0.0',
     },
 )
