@@ -16,7 +16,7 @@ from enum import Enum, auto
 from typing import Any, Callable, Optional
 
 from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtGui import QFont, QFontDatabase, QImage, QKeySequence, QPixmap, QShortcut
+from PyQt6.QtGui import QFont, QFontDatabase, QIcon, QImage, QKeySequence, QPixmap, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -76,6 +76,11 @@ def _log_startup_exception(ex: BaseException) -> str:
             f.write("\n")
         f.write(f"Error: {ex}\n")
     return path
+
+
+def _resource_path(*parts: str) -> str:
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, *parts)
 
 
 # --- Theme --------------------------------------------------------------------
@@ -1210,6 +1215,10 @@ def main() -> None:
         except Exception:
             pass
         app = QApplication(sys.argv)
+        app_icon_path = _resource_path("assets", "Quartz_Logo.png")
+        app_icon = QIcon(app_icon_path) if os.path.exists(app_icon_path) else QIcon()
+        if not app_icon.isNull():
+            app.setWindowIcon(app_icon)
         if sys.platform == "win32":
             f = QFont(FONT_FAMILY, 10)
             if not QFont(FONT_FAMILY).exactMatch():
@@ -1218,6 +1227,8 @@ def main() -> None:
             f = QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
         app.setFont(f)
         w = MainWindow()
+        if not app_icon.isNull():
+            w.setWindowIcon(app_icon)
         w.show()
         sys.exit(app.exec())
     except Exception as ex:
